@@ -1,0 +1,61 @@
+
+{% extends "base.html" %}
+{% block title %}Dashboard | EduTrack{% endblock %}
+
+{% block content %}
+<header class="topbar">
+    <div>
+        <p class="eyebrow">ACADEMIC OVERVIEW</p>
+        <h1>Dashboard</h1>
+        <p class="subtitle">Monitor student performance in one place.</p>
+    </div>
+</header>
+
+<section>
+    <div class="section-heading">
+        <h2>Overview</h2>
+        <p>Current Flask data</p>
+    </div>
+
+    <div class="stats-grid">
+        <article class="stat-card">
+            <span class="stat-icon blue">S</span>
+            <p>Total Students</p>
+            <h3>{{ total_students }}</h3>
+            <small>Students currently stored</small>
+        </article>
+
+        <article class="stat-card">
+            <span class="stat-icon green">%</span>
+            <p>Pass Percentage</p>
+            <h3>{{ pass_percentage }}%</h3>
+            <small>Based on entered marks</small>
+        </article>
+
+        <article class="stat-card">
+            <span class="stat-icon purple">A</span>
+            <p>Class Average</p>
+            <h3>{{ class_average }}%</h3>
+            <small>Based on entered marks</small>
+        </article>
+
+        <article class="stat-card">
+            <span class="stat-icon orange">★</span>
+            <p>Top Performer</p>
+            <h3>{{ top_performer }}</h3>
+            <small>Based on entered marks</small>
+        </article>
+    </div>
+</section>
+
+<section class="panel">
+    <h2>Welcome to EduTrack</h2>
+    <p class="page-description">
+        Manage student records, review academic results, and explore
+        performance analytics using the navigation menu.
+    </p>
+    <a class="action-link" href="{{ url_for('students_page') }}">
+        Open Student Management →
+    </a>
+</section>
+{% endblock %}

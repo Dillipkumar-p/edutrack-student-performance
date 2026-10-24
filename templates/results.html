@@ -1,0 +1,145 @@
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="results-page">
+<div class="page-header">
+    <h1>Student Results</h1>
+    <p>Select a student to view subject-wise and overall performance.</p>
+</div>
+
+<!-- Student List -->
+<div class="panel">
+    <h2>Students</h2>
+
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Roll Number</th>
+                    <th>Name</th>
+                    <th>Section</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {% for student in all_students %}
+                <tr>
+                    <td>{{ student.roll_no }}</td>
+                    <td>{{ student.name }}</td>
+                    <td>{{ student.section }}</td>
+                    <td>
+                        <a href="{{ url_for('results', student_id=student.id, assessment=assessment) }}">
+                            View Results
+                        </a>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4">No students available.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% if selected_student %}
+<div class="panel student-details">
+    <h2>{{ selected_student.name }}</h2>
+    <p>
+        Roll Number: {{ selected_student.roll_no }}
+        | Section: {{ selected_student.section }}
+    </p>
+<form action="{{ url_for('results') }}" method="GET" class="exam-form">
+        <input
+            type="hidden"
+            name="student_id"
+            value="{{ selected_student.id }}"
+        >
+
+        <label for="assessment">Select Examination</label>
+        <select id="assessment" name="assessment" required>
+            {% for exam in assessments %}
+            <option value="{{ exam }}"
+                {% if exam == assessment %}selected{% endif %}>
+                {{ exam }}
+            </option>
+            {% endfor %}
+        </select>
+
+        <button type="submit">Show Results</button>
+    </form>
+</div>
+
+<div class="panel">
+    <h2>{{ assessment }} — Subject-wise Results</h2>
+
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Subject</th>
+                    <th>Marks</th>
+                    <th>Percentage</th>
+                    <th>Grade</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {% for result in subject_results %}
+                <tr>
+                    <td>{{ result.subject }}</td>
+                    <td>{{ result.obtained }}/{{ result.maximum }}</td>
+                    <td>{{ result.percentage }}%</td>
+                    <td>{{ result.grade }}</td>
+                    <td>
+                        {% if result.status == "Pass" %}
+                            <span class="result-pass">Pass</span>
+                        {% else %}
+                            <span class="result-fail">Fail</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="5">
+                        No marks entered for this student and examination yet.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="panel">
+    <h2>Overall Performance</h2>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Total Marks</h3>
+            <h2>{{ total_obtained|round(2) }}/{{ total_maximum }}</h2>
+        </div>
+
+        <div class="stat-card">
+            <h3>Average Marks per Subject</h3>
+            <h2>{{ overall_average }}</h2>
+        </div>
+
+        <div class="stat-card">
+            <h3>Overall Percentage</h3>
+            <h2>{{ overall_percentage }}%</h2>
+        </div>
+
+        <div class="stat-card">
+            <h3>Overall Status</h3>
+            <h2>{{ overall_status }}</h2>
+        </div>
+    </div>
+</div>
+{% endif %}
+</div>
+{% endblock %}

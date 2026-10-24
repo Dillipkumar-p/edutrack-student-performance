@@ -1,0 +1,32 @@
+
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="page-header">
+    <h1>Edit Student</h1>
+    <p>Update the details of one student.</p>
+</div>
+
+<div class="panel">
+    <form action="{{ url_for('edit_student', student_id=student.id) }}"
+          method="POST" class="student-form vertical-form">
+
+        <label for="roll_no">Roll Number</label>
+        <input id="roll_no" type="text" name="roll_no"
+               value="{{ student.roll_no }}" required>
+
+        <label for="name">Student Name</label>
+        <input id="name" type="text" name="name"
+               value="{{ student.name }}" required>
+
+        <label for="section">Section</label>
+        <input id="section" type="text" name="section"
+               value="{{ student.section }}" required>
+
+        <button type="submit">Save Changes</button>
+        <a href="{{ url_for('students_page') }}">Cancel</a>
+    </form>
+</div>
+
+{% endblock %}

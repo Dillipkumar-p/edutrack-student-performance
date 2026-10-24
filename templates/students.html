@@ -1,0 +1,111 @@
+
+{% extends "base.html" %}
+
+{% block content %}
+
+<div class="page-header">
+    <h1>Student Management</h1>
+    <p>Add and manage student profiles.</p>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <div class="notice {{ category }}">{{ message }}</div>
+    {% endfor %}
+{% endwith %}
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <h3>Total Students</h3>
+        <h2>{{ total_students }}</h2>
+    </div>
+</div>
+
+<div class="panel">
+    <h2>Add New Student</h2>
+
+    <form action="{{ url_for('add_student') }}"
+          method="POST" class="vertical-form">
+
+        <label for="roll_no">Roll Number</label>
+        <input id="roll_no" type="text" name="roll_no"
+               placeholder="Enter roll number" required>
+
+        <label for="name">Student Name</label>
+        <input id="name" type="text" name="name"
+               placeholder="Enter student name" required>
+
+        <label for="section">Section</label>
+        <input id="section" type="text" name="section"
+               placeholder="Example: CSE-A" required>
+
+        <button type="submit">+ Add Student</button>
+    </form>
+</div>
+
+<div class="panel">
+    <h2>Student Records</h2>
+
+    <form action="{{ url_for('students_page') }}"
+          method="GET" class="student-form">
+
+        <input type="text" name="search"
+               placeholder="Search name, roll number or section"
+               value="{{ search }}">
+
+        <button type="submit">Search</button>
+        <a href="{{ url_for('students_page') }}">Clear</a>
+    </form>
+
+    <div class="table-wrapper">
+        <table>
+            <thead>
+                <tr>
+                    <th>Roll Number</th>
+                    <th>Student Name</th>
+                    <th>Section</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {% for student in students %}
+                <tr>
+                    <td>{{ student.roll_no }}</td>
+                    <td>{{ student.name }}</td>
+                    <td>{{ student.section }}</td>
+
+                    <td>
+                        <div class="student-form">
+                            <a href="{{ url_for(
+                                'edit_student',
+                                student_id=student.id
+                            ) }}">Edit</a>
+
+                            <form action="{{ url_for(
+                                'delete_student',
+                                student_id=student.id
+                            ) }}" method="POST"
+                            onsubmit="return confirm(
+                                'Delete this student?'
+                            );">
+
+                                <button type="submit"
+                                        class="delete-button">
+                                    Delete
+                                </button>
+                            </form>
+                        </div>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4">No students found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+{% endblock %}

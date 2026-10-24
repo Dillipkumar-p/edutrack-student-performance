@@ -1,0 +1,201 @@
+
+{% extends "base.html" %}
+
+{% block content %}
+<div class="analytics-page">
+
+    <div class="page-header">
+        <h1>Performance Analytics</h1>
+        <p>Subject averages, top performers and students needing teacher support.</p>
+    </div>
+
+    <div class="panel">
+        <form action="{{ url_for('analytics') }}" method="GET"
+              class="analytics-filter">
+            <label for="assessment">Select Assessment</label>
+            <select id="assessment" name="assessment">
+                {% for exam in assessments %}
+                <option value="{{ exam }}"
+                    {% if exam == assessment %}selected{% endif %}>
+                    {{ exam }}
+                </option>
+                {% endfor %}
+            </select>
+            <button type="submit">View Analytics</button>
+        </form>
+    </div>
+
+    <div class="stats-grid">
+        <div class="stat-card">
+            <h3>Total Students</h3>
+            <h2>{{ total_students }}</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Complete Records</h3>
+            <h2>{{ complete_count }}</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Teacher Assistance Needed</h3>
+            <h2>{{ assistance_students|length }}</h2>
+        </div>
+        <div class="stat-card">
+            <h3>Incomplete Records</h3>
+            <h2>{{ incomplete_students|length }}</h2>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Subject-wise Average</h2>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Subject</th>
+                        <th>Average Marks</th>
+                        <th>Maximum Marks</th>
+                        <th>Average Percentage</th>
+                        <th>Records Counted</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in subject_averages %}
+                    <tr>
+                        <td>{{ item.subject }}</td>
+                        <td>{{ item.average }}</td>
+                        <td>{{ item.maximum }}</td>
+                        <td>{{ item.percentage }}%</td>
+                        <td>{{ item.student_count }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5">No marks recorded for this assessment.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Subject Performance Chart</h2>
+        {% if chart_image %}
+        <img
+            src="data:image/png;base64,{{ chart_image }}"
+            alt="Subject average percentage chart"
+            class="analytics-chart"
+        >
+        {% else %}
+        <p>Add marks to generate the chart.</p>
+        {% endif %}
+    </div>
+
+    <div class="panel">
+        <h2>Top Performers</h2>
+        <p>Ranked by overall percentage. Only students with all four subjects recorded are included.</p>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Rank</th>
+                        <th>Roll Number</th>
+                        <th>Name</th>
+                        <th>Section</th>
+                        <th>Total Marks</th>
+                        <th>Percentage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for student in toppers %}
+                    <tr>
+                        <td>{{ loop.index }}</td>
+                        <td>{{ student.roll_no }}</td>
+                        <td>{{ student.name }}</td>
+                        <td>{{ student.section }}</td>
+                        <td>{{ student.total|round(2) }}/{{ student.maximum }}</td>
+                        <td>{{ student.percentage }}%</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="6">No complete student records available for ranking yet.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Teacher Assistance Needed</h2>
+        <p>Students with at least one recorded subject below the assumed pass mark.</p>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Roll Number</th>
+                        <th>Name</th>
+                        <th>Section</th>
+                        <th>Subjects Needing Support</th>
+                        <th>Overall Percentage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for student in assistance_students %}
+                    <tr>
+                        <td>{{ student.roll_no }}</td>
+                        <td>{{ student.name }}</td>
+                        <td>{{ student.section }}</td>
+                        <td>
+                            {% for subject in student.subjects %}
+                                {% if subject.status == "Fail" %}
+                                    {{ subject.subject }}{% if not loop.last %}, {% endif %}
+                                {% endif %}
+                            {% endfor %}
+                        </td>
+                        <td>{{ student.percentage }}%</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="5">No students currently need assistance based on recorded marks.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <div class="panel">
+        <h2>Incomplete Records</h2>
+        <p>These students are excluded from the top performers list until all expected subjects have marks.</p>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Roll Number</th>
+                        <th>Name</th>
+                        <th>Section</th>
+                        <th>Subjects Missing</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for student in incomplete_students %}
+                    <tr>
+                        <td>{{ student.roll_no }}</td>
+                        <td>{{ student.name }}</td>
+                        <td>{{ student.section }}</td>
+                        <td>{{ student.missing_subjects|join(", ") }}</td>
+                    </tr>
+                    {% else %}
+                    <tr>
+                        <td colspan="4">All student records are complete for this assessment.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

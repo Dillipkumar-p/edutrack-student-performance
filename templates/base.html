@@ -1,0 +1,56 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Student Performance System{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <h2>EduTrack</h2>
+            <p class="side-label">MAIN MENU</p>
+
+            <a href="{{ url_for('dashboard') }}"
+               class="nav-link {% if active_page == 'dashboard' %}active{% endif %}">
+                Dashboard
+            </a>
+
+            <a href="{{ url_for('students_page') }}"
+               class="nav-link {% if active_page == 'students' %}active{% endif %}">
+                Students
+            </a>
+
+            <a href="{{ url_for('results') }}"
+               class="nav-link {% if active_page == 'results' %}active{% endif %}">
+                Results
+            </a>
+
+            <a href="{{ url_for('analytics') }}"
+               class="nav-link {% if active_page == 'analytics' %}active{% endif %}">
+                Analytics
+            </a>
+            
+           
+<a href="{{ url_for('marks_page') }}"
+   class="nav-link {% if active_page == 'marks' %}active{% endif %}">
+    Marks
+</a>
+
+
+
+            <div class="sidebar-footer">
+                Student Performance<br>Analysis System
+            </div>
+        </aside>
+
+        <main class="main-content">
+            {% block content %}{% endblock %}
+            <footer>Student Performance Analysis System</footer>
+        </main>
+    </div>
+</body>
+</html>
+
