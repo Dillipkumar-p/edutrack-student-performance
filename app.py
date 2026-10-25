@@ -10,41 +10,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-
 app = Flask(__name__)
-app.secret_key = "review1-prototype-key"
+app.secret_key = os.getenv("FLASK_SECRET_KEY")
+
+if not app.secret_key:
+    raise RuntimeError("FLASK_SECRET_KEY is not configured.")
+
+
 def get_db_connection():
     return mysql.connector.connect(
         host=os.getenv("DB_HOST", "localhost"),
+        port=int(os.getenv("DB_PORT", "3306")),
         user=os.getenv("DB_USER", "root"),
         password=os.getenv("DB_PASSWORD"),
-        database=os.getenv(
-            "DB_NAME", "student_performance_db"
-        )
+        database=os.getenv("DB_NAME", "student_performance_db"),
+        connection_timeout=10,
+        ssl_disabled=False
     )
-
-students = [
-    {"id": 1, "roll_no": "101", "name": "Arun Kumar", "section": "CSE-A"},
-    {"id": 2, "roll_no": "102", "name": "Priya Reddy", "section": "CSE-A"},
-    {"id": 3, "roll_no": "103", "name": "Rahul Kumar", "section": "CSE-B"},
-    {"id": 4, "roll_no": "104", "name": "Sneha Devi", "section": "CSE-B"},
-]
-
-next_id = 5
-
-# Temporary marks data
-marks = []
-next_mark_id = 1
-
-# Subject details for the prototype
-
-subjects = {
-    "Java": {"max_marks": 100, "pass_marks": 40},
-    "Python": {"max_marks": 100, "pass_marks": 40},
-    "DBMS": {"max_marks": 100, "pass_marks": 40},
-    "Mathematics": {"max_marks": 100, "pass_marks": 40}
-}
-
 
 
 def get_max_marks(assessment):
@@ -53,20 +35,15 @@ def get_max_marks(assessment):
     return 100
 
 
-
-
-
 @app.route("/")
 def dashboard():
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
 
     try:
-        # Total students
         cursor.execute("SELECT COUNT(*) AS total FROM students")
         total_students = cursor.fetchone()["total"]
 
-        # Calculate marks statistics
         cursor.execute("""
             SELECT
                 COUNT(*) AS total_marks,
@@ -87,24 +64,21 @@ def dashboard():
         """)
 
         stats = cursor.fetchone()
-
         total_marks = stats["total_marks"]
         passed_marks = stats["passed_marks"] or 0
         total_obtained = float(stats["total_obtained"])
         total_possible = float(stats["total_possible"])
 
         if total_marks > 0:
-            pass_percentage = round(
-                (passed_marks / total_marks) * 100, 1
+            pass_percentage = round((passed_marks / total_marks) * 100, 1)
+            class_average = (
+                round((total_obtained / total_possible) * 100, 1)
+                if total_possible > 0 else 0
             )
-            class_average = round(
-                (total_obtained / total_possible) * 100, 1
-            ) if total_possible > 0 else 0
         else:
             pass_percentage = 0
             class_average = 0
 
-        # Find the top-performing student
         cursor.execute("""
             SELECT
                 s.name,
@@ -121,10 +95,7 @@ def dashboard():
         """)
 
         top_student = cursor.fetchone()
-
-        top_performer = (
-            top_student["name"] if top_student else "N/A"
-        )
+        top_performer = top_student["name"] if top_student else "N/A"
 
     finally:
         cursor.close()
@@ -138,7 +109,6 @@ def dashboard():
         class_average=class_average,
         top_performer=top_performer
     )
-
 
 
 @app.route("/students")
@@ -204,6 +174,7 @@ def add_student():
 
     except mysql.connector.Error:
         connection.rollback()
+        app.logger.exception("Database error while adding a student")
         flash("Could not save the student. Please try again.", "error")
 
     finally:
@@ -226,7 +197,6 @@ def edit_student(student_id):
 
             if not roll_no or not name or not section:
                 flash("Please fill in all fields.", "error")
-
             else:
                 try:
                     cursor.execute("""
@@ -255,6 +225,7 @@ def edit_student(student_id):
 
                 except mysql.connector.Error:
                     connection.rollback()
+                    app.logger.exception("Database error while updating a student")
                     flash("Could not update the student. Please try again.", "error")
 
         cursor.execute("""
@@ -300,6 +271,7 @@ def delete_student(student_id):
 
     except mysql.connector.Error:
         connection.rollback()
+        app.logger.exception("Database error while deleting a student")
         flash(
             "Could not delete this student. Check whether marks are linked to the record.",
             "error"
@@ -333,7 +305,7 @@ def results():
         all_students = cursor.fetchall()
 
         selected_student = next(
-            (s for s in all_students if s["id"] == selected_id),
+            (student for student in all_students if student["id"] == selected_id),
             None
         )
 
@@ -347,8 +319,8 @@ def results():
                 SELECT sub.subject_name AS subject,
                        m.marks_obtained AS obtained,
                        m.max_marks AS maximum
-                FROM marks m
-                JOIN subjects sub ON m.subject_id = sub.subject_id
+                FROM marks AS m
+                JOIN subjects AS sub ON m.subject_id = sub.subject_id
                 WHERE m.student_id = %s
                   AND m.assessment = %s
                 ORDER BY sub.subject_id, m.mark_id
@@ -359,7 +331,7 @@ def results():
             for mark in student_marks:
                 obtained = float(mark["obtained"])
                 maximum = int(mark["maximum"])
-                percentage = round(obtained / maximum * 100, 2)
+                percentage = round(obtained / maximum * 100, 2) if maximum else 0
 
                 pass_marks = 20 if maximum == 50 else 40
                 passed = obtained >= pass_marks
@@ -396,12 +368,10 @@ def results():
             round(total_obtained / total_maximum * 100, 2)
             if total_maximum else 0
         )
-
         overall_average = (
             round(total_obtained / len(subject_results), 2)
             if subject_results else 0
         )
-
         overall_status = (
             "Fail" if any_failed else "Pass"
         ) if subject_results else "No marks"
@@ -456,8 +426,8 @@ def analytics():
                    m.assessment,
                    m.marks_obtained,
                    m.max_marks
-            FROM marks m
-            JOIN subjects sub ON m.subject_id = sub.subject_id
+            FROM marks AS m
+            JOIN subjects AS sub ON m.subject_id = sub.subject_id
             WHERE m.assessment = %s
             ORDER BY m.mark_id
         """, (assessment,))
@@ -511,7 +481,7 @@ def analytics():
         student["maximum"] += maximum
         student["recorded_subjects"].add(subject)
 
-        percentage = round(obtained / maximum * 100, 2)
+        percentage = round(obtained / maximum * 100, 2) if maximum else 0
         passed = obtained >= pass_marks
 
         student["subjects"].append({
@@ -532,23 +502,18 @@ def analytics():
             subject for subject in expected_subjects
             if subject not in student["recorded_subjects"]
         ]
-
         student["complete"] = len(student["missing_subjects"]) == 0
-
         student["percentage"] = (
             round(student["total"] / student["maximum"] * 100, 2)
             if student["maximum"] else 0
         )
-
         student["subjects"].sort(
             key=lambda item: expected_subjects.index(item["subject"])
         )
-
         student_results.append(student)
 
     complete_students = [
-        student for student in student_results
-        if student["complete"]
+        student for student in student_results if student["complete"]
     ]
     complete_students.sort(
         key=lambda student: student["percentage"],
@@ -560,7 +525,6 @@ def analytics():
         student for student in student_results
         if student["needs_assistance"]
     ]
-
     incomplete_students = [
         student for student in student_results
         if not student["complete"]
@@ -618,11 +582,10 @@ def analytics():
     )
 
 
-
-
 def load_students():
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
+
     try:
         cursor.execute("""
             SELECT student_id AS id, roll_no, name, section
@@ -638,6 +601,7 @@ def load_students():
 def load_subjects():
     connection = get_db_connection()
     cursor = connection.cursor(dictionary=True)
+
     try:
         cursor.execute("""
             SELECT subject_name, max_marks, pass_marks
@@ -645,6 +609,7 @@ def load_subjects():
             ORDER BY subject_id
         """)
         rows = cursor.fetchall()
+
         return {
             row["subject_name"]: {
                 "max_marks": row["max_marks"],
@@ -675,9 +640,9 @@ def marks_page():
                    m.marks_obtained,
                    m.max_marks,
                    sub.pass_marks
-            FROM marks m
-            JOIN students s ON m.student_id = s.student_id
-            JOIN subjects sub ON m.subject_id = sub.subject_id
+            FROM marks AS m
+            JOIN students AS s ON m.student_id = s.student_id
+            JOIN subjects AS sub ON m.subject_id = sub.subject_id
             WHERE s.roll_no LIKE %s
                OR s.name LIKE %s
                OR sub.subject_name LIKE %s
@@ -688,6 +653,7 @@ def marks_page():
             f"%{search}%", f"%{search}%"
         ))
         display_marks = cursor.fetchall()
+
     finally:
         cursor.close()
         connection.close()
@@ -761,6 +727,7 @@ def add_mark():
 
     except mysql.connector.Error:
         connection.rollback()
+        app.logger.exception("Database error while saving marks")
         flash("Could not save marks. Please check the entered details.", "error")
 
     finally:
@@ -843,19 +810,17 @@ def edit_mark(mark_id):
             return redirect(url_for("marks_page"))
 
         cursor.execute("""
-    SELECT
-        m.mark_id AS id,
-        m.student_id,
-        sub.subject_name AS subject,
-        m.assessment,
-        m.marks_obtained,
-        m.max_marks,
-        sub.pass_marks
-    FROM marks AS m
-    JOIN subjects AS sub
-        ON m.subject_id = sub.subject_id
-    WHERE m.mark_id = %s
-""", (mark_id,))
+            SELECT m.mark_id AS id,
+                   m.student_id,
+                   sub.subject_name AS subject,
+                   m.assessment,
+                   m.marks_obtained,
+                   m.max_marks,
+                   sub.pass_marks
+            FROM marks AS m
+            JOIN subjects AS sub ON m.subject_id = sub.subject_id
+            WHERE m.mark_id = %s
+        """, (mark_id,))
         mark = cursor.fetchone()
 
         if mark is None:
@@ -870,11 +835,11 @@ def edit_mark(mark_id):
             subjects=load_subjects()
         )
 
-    except mysql.connector.Error as e:
-     connection.rollback()
-     print("MARKS EDIT DATABASE ERROR:", e)
-     flash("A database error occurred while processing marks.", "error")
-     return redirect(url_for("marks_page"))
+    except mysql.connector.Error:
+        connection.rollback()
+        app.logger.exception("Database error while editing marks")
+        flash("A database error occurred while processing marks.", "error")
+        return redirect(url_for("marks_page"))
 
     finally:
         cursor.close()
@@ -901,6 +866,7 @@ def delete_mark(mark_id):
 
     except mysql.connector.Error:
         connection.rollback()
+        app.logger.exception("Database error while deleting marks")
         flash("Could not delete the marks record.", "error")
 
     finally:
@@ -909,21 +875,29 @@ def delete_mark(mark_id):
 
     return redirect(url_for("marks_page"))
 
+
 @app.route("/db-test")
 def db_test():
+    connection = None
+    cursor = None
+
     try:
         connection = get_db_connection()
         cursor = connection.cursor()
         cursor.execute("SELECT COUNT(*) FROM students")
         count = cursor.fetchone()[0]
-
-        cursor.close()
-        connection.close()
-
         return f"MySQL connected successfully! Students: {count}"
 
-    except Exception as e:
-        return f"MySQL connection failed: {e}", 500
+    except Exception:
+        app.logger.exception("Database connection test failed")
+        return "Database connection failed.", 500
+
+    finally:
+        if cursor is not None:
+            cursor.close()
+        if connection is not None:
+            connection.close()
+
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False)
