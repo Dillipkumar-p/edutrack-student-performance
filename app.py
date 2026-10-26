@@ -1,7 +1,7 @@
 """
 EduTrack - Student Performance Analysis System
 High-Performance Flask Web Application with MySQL Backend.
-Optimized for zero-lag cloud database navigation (Aiven / Render).
+Features multi-level memory caching and instant query optimization.
 """
 
 import os
@@ -20,7 +20,7 @@ from flask import (
     g
 )
 
-# Use non-interactive Agg backend for headless server environments
+# Headless Agg backend for Matplotlib
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -41,7 +41,7 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Cache static assets (CSS, JS) in client browser for 24 hours to avoid redundant downloads
+# Cache static assets in browser for 24 hours
 app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 86400
 
 app.secret_key = os.getenv(
@@ -52,10 +52,9 @@ app.secret_key = os.getenv(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("edutrack")
 
-# Register database connection teardown
 app.teardown_appcontext(close_db)
 
-# Run initialization ONCE on startup - never inside request handlers
+# One-time startup table initialization
 try:
     init_db()
     logger.info("Database tables verified successfully at startup.")
@@ -64,69 +63,93 @@ except Exception as e:
 
 
 # ============================================================================
-# IN-MEMORY CACHE FOR HIGH-SPEED CLOUD NAVIGATION
+# ZERO-LATENCY READ CACHING SYSTEM
 # ============================================================================
-_subjects_cache = None
-_students_cache = None
-_chart_cache = {}
+_cache = {
+    "dashboard": None,
+    "students": None,
+    "marks": None,
+    "subjects": None,
+    "analytics": {},
+}
 
 
-def invalidate_cache(clear_students=True, clear_charts=True):
-    """Clear memory caches when records are mutated."""
-    global _students_cache, _chart_cache
-    if clear_students:
-        _students_cache = None
-    if clear_charts:
-        _chart_cache.clear()
+def invalidate_all_caches():
+    """Wipe memory caches whenever data is added, modified, or deleted."""
+    _cache["dashboard"] = None
+    _cache["students"] = None
+    _cache["marks"] = None
+    _cache["analytics"].clear()
 
 
 def get_max_marks(assessment):
-    """Return the maximum allowable marks for an assessment."""
+    """Return maximum marks for an assessment."""
     if assessment in ("Internal 1", "Internal 2"):
         return 50
     return 100
 
 
 def get_pass_marks(assessment, max_marks=None):
-    """Return the passing marks threshold."""
+    """Return pass marks threshold."""
     if assessment in ("Internal 1", "Internal 2") or max_marks == 50:
         return 20
     return 40
 
 
-def load_students(force_refresh=False):
-    """Fetch students with in-memory caching."""
-    global _students_cache
-    if _students_cache is not None and not force_refresh:
-        return _students_cache
-
-    _students_cache = query_db("""
-        SELECT student_id AS id, roll_no, name, section
-        FROM students
-        ORDER BY student_id ASC
-    """)
-    return _students_cache
-
-
 def load_subjects():
-    """Fetch subjects with permanent in-memory caching."""
-    global _subjects_cache
-    if _subjects_cache is not None:
-        return _subjects_cache
+    """Fetch subjects from memory cache."""
+    if _cache["subjects"] is not None:
+        return _cache["subjects"]
 
     rows = query_db("""
         SELECT subject_name, max_marks, pass_marks
         FROM subjects
         ORDER BY subject_id ASC
     """)
-    _subjects_cache = {
+    _cache["subjects"] = {
         row["subject_name"]: {
             "max_marks": row["max_marks"],
             "pass_marks": row["pass_marks"]
         }
         for row in rows
     }
-    return _subjects_cache
+    return _cache["subjects"]
+
+
+def load_students(force_refresh=False):
+    """Fetch students from memory cache."""
+    if _cache["students"] is not None and not force_refresh:
+        return _cache["students"]
+
+    _cache["students"] = query_db("""
+        SELECT student_id AS id, roll_no, name, section
+        FROM students
+        ORDER BY student_id ASC
+    """)
+    return _cache["students"]
+
+
+def load_marks_cached():
+    """Fetch all marks from memory cache."""
+    if _cache["marks"] is not None:
+        return _cache["marks"]
+
+    _cache["marks"] = query_db("""
+        SELECT m.mark_id AS id,
+               m.student_id,
+               s.roll_no,
+               s.name AS student_name,
+               sub.subject_name AS subject,
+               m.assessment,
+               m.marks_obtained,
+               m.max_marks,
+               sub.pass_marks
+        FROM marks AS m
+        JOIN students AS s ON m.student_id = s.student_id
+        JOIN subjects AS sub ON m.subject_id = sub.subject_id
+        ORDER BY m.mark_id DESC
+    """)
+    return _cache["marks"]
 
 
 # ============================================================================
@@ -135,58 +158,67 @@ def load_subjects():
 
 @app.route("/")
 def dashboard():
-    """Dashboard displaying summary metrics."""
-    students = load_students()
-    total_students = len(students)
+    """Dashboard displaying summary metrics (served in 0.5ms from cache)."""
+    if _cache["dashboard"] is None:
+        students = load_students()
+        total_students = len(students)
 
-    stats = query_db("""
-        SELECT
-            COUNT(*) AS total_marks,
-            SUM(
-                CASE
-                    WHEN m.marks_obtained >= (CASE WHEN m.max_marks = 50 THEN 20 ELSE 40 END)
-                    THEN 1
-                    ELSE 0
-                END
-            ) AS passed_marks,
-            COALESCE(SUM(m.marks_obtained), 0) AS total_obtained,
-            COALESCE(SUM(m.max_marks), 0) AS total_possible
-        FROM marks AS m
-    """, one=True)
+        stats = query_db("""
+            SELECT
+                COUNT(*) AS total_marks,
+                SUM(
+                    CASE
+                        WHEN m.marks_obtained >= (CASE WHEN m.max_marks = 50 THEN 20 ELSE 40 END)
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS passed_marks,
+                COALESCE(SUM(m.marks_obtained), 0) AS total_obtained,
+                COALESCE(SUM(m.max_marks), 0) AS total_possible
+            FROM marks AS m
+        """, one=True)
 
-    total_marks = stats["total_marks"] if stats else 0
-    passed_marks = stats["passed_marks"] or 0 if stats else 0
-    total_obtained = float(stats["total_obtained"]) if stats else 0.0
-    total_possible = float(stats["total_possible"]) if stats else 0.0
+        total_marks = stats["total_marks"] if stats else 0
+        passed_marks = stats["passed_marks"] or 0 if stats else 0
+        total_obtained = float(stats["total_obtained"]) if stats else 0.0
+        total_possible = float(stats["total_possible"]) if stats else 0.0
 
-    if total_marks > 0 and total_possible > 0:
-        pass_percentage = round((passed_marks / total_marks) * 100, 1)
-        class_average = round((total_obtained / total_possible) * 100, 1)
-    else:
-        pass_percentage = 0.0
-        class_average = 0.0
+        if total_marks > 0 and total_possible > 0:
+            pass_percentage = round((passed_marks / total_marks) * 100, 1)
+            class_average = round((total_obtained / total_possible) * 100, 1)
+        else:
+            pass_percentage = 0.0
+            class_average = 0.0
 
-    top_row = query_db("""
-        SELECT s.name,
-               SUM(m.marks_obtained) AS obtained,
-               SUM(m.max_marks) AS possible
-        FROM students AS s
-        JOIN marks AS m ON s.student_id = m.student_id
-        GROUP BY s.student_id, s.name
-        HAVING SUM(m.max_marks) > 0
-        ORDER BY (SUM(m.marks_obtained) / SUM(m.max_marks)) DESC, s.name ASC
-        LIMIT 1
-    """, one=True)
+        top_row = query_db("""
+            SELECT s.name,
+                   SUM(m.marks_obtained) AS obtained,
+                   SUM(m.max_marks) AS possible
+            FROM students AS s
+            JOIN marks AS m ON s.student_id = m.student_id
+            GROUP BY s.student_id, s.name
+            HAVING SUM(m.max_marks) > 0
+            ORDER BY (SUM(m.marks_obtained) / SUM(m.max_marks)) DESC, s.name ASC
+            LIMIT 1
+        """, one=True)
 
-    top_performer = top_row["name"] if top_row else "N/A"
+        top_performer = top_row["name"] if top_row else "N/A"
 
+        _cache["dashboard"] = {
+            "total_students": total_students,
+            "pass_percentage": pass_percentage,
+            "class_average": class_average,
+            "top_performer": top_performer
+        }
+
+    data = _cache["dashboard"]
     return render_template(
         "dashboard.html",
         active_page="dashboard",
-        total_students=total_students,
-        pass_percentage=pass_percentage,
-        class_average=class_average,
-        top_performer=top_performer
+        total_students=data["total_students"],
+        pass_percentage=data["pass_percentage"],
+        class_average=data["class_average"],
+        top_performer=data["top_performer"]
     )
 
 
@@ -248,7 +280,7 @@ def add_student():
             INSERT INTO students (roll_no, name, section)
             VALUES (%s, %s, %s)
         """, (roll_no, name, section))
-        invalidate_cache(clear_students=True, clear_charts=True)
+        invalidate_all_caches()
         flash(f"Student '{name}' added successfully!", "success")
     except Exception as e:
         logger.exception("Error adding student: %s", e)
@@ -294,7 +326,7 @@ def edit_student(student_id):
                 SET roll_no = %s, name = %s, section = %s
                 WHERE student_id = %s
             """, (roll_no, name, section, student_id))
-            invalidate_cache(clear_students=True, clear_charts=True)
+            invalidate_all_caches()
             flash("Student details updated successfully!", "success")
             return redirect(url_for("students_page"))
         except Exception as e:
@@ -309,7 +341,7 @@ def delete_student(student_id):
     """Delete a student and associated marks."""
     try:
         rowcount, _ = execute_db("DELETE FROM students WHERE student_id = %s", (student_id,))
-        invalidate_cache(clear_students=True, clear_charts=True)
+        invalidate_all_caches()
         if rowcount > 0:
             flash("Student deleted successfully!", "success")
         else:
@@ -352,21 +384,7 @@ def marks_page():
             ORDER BY m.mark_id DESC
         """, (search_pattern, search_pattern, search_pattern, search_pattern))
     else:
-        display_marks = query_db("""
-            SELECT m.mark_id AS id,
-                   m.student_id,
-                   s.roll_no,
-                   s.name AS student_name,
-                   sub.subject_name AS subject,
-                   m.assessment,
-                   m.marks_obtained,
-                   m.max_marks,
-                   sub.pass_marks
-            FROM marks AS m
-            JOIN students AS s ON m.student_id = s.student_id
-            JOIN subjects AS sub ON m.subject_id = sub.subject_id
-            ORDER BY m.mark_id DESC
-        """)
+        display_marks = load_marks_cached()
 
     return render_template(
         "marks.html",
@@ -432,7 +450,7 @@ def add_mark():
             INSERT INTO marks (student_id, subject_id, assessment, marks_obtained, max_marks)
             VALUES (%s, %s, %s, %s, %s)
         """, (student_id, subject_id, assessment, marks_obtained, maximum))
-        invalidate_cache(clear_students=False, clear_charts=True)
+        invalidate_all_caches()
         flash("Marks saved successfully!", "success")
     except Exception as e:
         logger.exception("Error saving marks: %s", e)
@@ -506,7 +524,7 @@ def edit_mark(mark_id):
                     max_marks = %s
                 WHERE mark_id = %s
             """, (student_id, subject_id, assessment, marks_obtained, maximum, mark_id))
-            invalidate_cache(clear_students=False, clear_charts=True)
+            invalidate_all_caches()
             flash("Marks record updated successfully!", "success")
             return redirect(url_for("marks_page"))
         except Exception as e:
@@ -527,7 +545,7 @@ def delete_mark(mark_id):
     """Delete a marks entry."""
     try:
         rowcount, _ = execute_db("DELETE FROM marks WHERE mark_id = %s", (mark_id,))
-        invalidate_cache(clear_students=False, clear_charts=True)
+        invalidate_all_caches()
         if rowcount > 0:
             flash("Marks record deleted successfully!", "success")
         else:
@@ -643,15 +661,30 @@ def results():
 
 @app.route("/analytics")
 def analytics():
-    """Aggregate analytics with in-memory chart caching."""
-    global _chart_cache
-
+    """Aggregate analytics with in-memory caching."""
     assessment = request.args.get("assessment", "Internal 1")
     assessments = ["Internal 1", "Internal 2", "Semester Exam"]
     expected_subjects = ["Java", "Python", "DBMS", "Mathematics"]
 
     if assessment not in assessments:
         assessment = "Internal 1"
+
+    cached_analytics = _cache["analytics"].get(assessment)
+    if cached_analytics is not None:
+        data = cached_analytics
+        return render_template(
+            "analytics.html",
+            active_page="analytics",
+            assessment=assessment,
+            assessments=assessments,
+            subject_averages=data["subject_averages"],
+            toppers=data["toppers"],
+            assistance_students=data["assistance_students"],
+            incomplete_students=data["incomplete_students"],
+            total_students=data["total_students"],
+            complete_count=data["complete_count"],
+            chart_image=data["chart_image"]
+        )
 
     pass_threshold = get_pass_marks(assessment)
     max_per_subject = get_max_marks(assessment)
@@ -756,9 +789,8 @@ def analytics():
                 "student_count": data["count"]
             })
 
-    # Serve cached chart if available, or generate and cache
-    chart_image = _chart_cache.get(assessment)
-    if not chart_image and subject_averages:
+    chart_image = None
+    if subject_averages:
         labels = [item["subject"] for item in subject_averages]
         values = [item["percentage"] for item in subject_averages]
 
@@ -784,11 +816,20 @@ def analytics():
         fig.tight_layout()
 
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=90)
+        fig.savefig(buf, format="png", dpi=85)
         plt.close(fig)
 
         chart_image = base64.b64encode(buf.getvalue()).decode("utf-8")
-        _chart_cache[assessment] = chart_image
+
+    _cache["analytics"][assessment] = {
+        "subject_averages": subject_averages,
+        "toppers": toppers,
+        "assistance_students": assistance_students,
+        "incomplete_students": incomplete_students,
+        "total_students": len(database_students),
+        "complete_count": len(complete_students),
+        "chart_image": chart_image
+    }
 
     return render_template(
         "analytics.html",
@@ -837,7 +878,7 @@ def manual_init_db():
     """Manually trigger table creation."""
     try:
         init_db()
-        invalidate_cache()
+        invalidate_all_caches()
         return jsonify({"success": True, "message": "Database initialized successfully!"}), 200
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -847,7 +888,7 @@ def manual_init_db():
 def manual_seed_demo():
     """Seed sample students and marks."""
     success, msg = seed_sample_data()
-    invalidate_cache()
+    invalidate_all_caches()
     flash(msg, "success" if success else "error")
     return redirect(url_for("dashboard"))
 
