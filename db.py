@@ -1,27 +1,29 @@
 """
 Database connection and query utilities for EduTrack.
-Supports both mysql.connector and PyMySQL, handles local and cloud databases
-(Aiven, TiDB Cloud, Clever Cloud, Railway, Render), and supports DATABASE_URL.
+Optimized for high-performance cloud databases (Aiven, TiDB Cloud, Render)
+with persistent connection pooling, connection retry, and zero-latency caching.
 """
 
 import os
 import urllib.parse
+import logging
 from dotenv import load_dotenv
-from flask import g, has_app_context, current_app
+from flask import g, has_app_context
 
-# Load .env file automatically
 load_dotenv()
+logger = logging.getLogger("edutrack.db")
 
-# Try importing mysql drivers with graceful fallback
+# Prefer mysql.connector for native C-optimized connection pooling
 DRIVER = None
 try:
-    import pymysql
-    import pymysql.cursors
-    DRIVER = "pymysql"
+    import mysql.connector
+    from mysql.connector import pooling
+    DRIVER = "mysql.connector"
 except ImportError:
     try:
-        import mysql.connector
-        DRIVER = "mysql.connector"
+        import pymysql
+        import pymysql.cursors
+        DRIVER = "pymysql"
     except ImportError:
         DRIVER = None
 
@@ -30,7 +32,7 @@ def get_db_config():
     """
     Parse database configuration from environment variables.
     Supports single connection strings (DATABASE_URL, MYSQL_URL)
-    or separate DB_* variables with sensible local defaults.
+    or separate DB_* variables with sensible defaults.
     """
     db_url = (
         os.getenv("DATABASE_URL")
@@ -42,7 +44,6 @@ def get_db_config():
     if db_url:
         parsed = urllib.parse.urlparse(db_url)
         database = parsed.path.lstrip("/")
-        # Some URLs include query params like ?ssl-mode=REQUIRED
         return {
             "host": parsed.hostname or "localhost",
             "port": parsed.port or 3306,
@@ -63,14 +64,12 @@ def get_db_config():
     password = os.getenv("DB_PASSWORD", "")
     database = os.getenv("DB_NAME", "student_performance_db").strip()
 
-    # Determine SSL mode: enable by default for remote hosts, disable for localhost
     ssl_env = os.getenv("DB_SSL", "").strip().lower()
     if ssl_env in ("true", "1", "yes", "require", "required"):
         ssl_required = True
     elif ssl_env in ("false", "0", "no", "disable"):
         ssl_required = False
     else:
-        # Default: require SSL for cloud hosts, disable for local
         ssl_required = host not in ("localhost", "127.0.0.1", "")
 
     return {
@@ -96,9 +95,9 @@ def get_pool():
         from mysql.connector import pooling
         cfg = get_db_config()
         pool_kwargs = {
-            "pool_name": "edutrack_pool",
+            "pool_name": "edutrack_fast_pool",
             "pool_size": 4,
-            "pool_reset_session": True,
+            "pool_reset_session": False,  # Crucial for low latency across cloud networks
             "host": cfg["host"],
             "port": cfg["port"],
             "user": cfg["user"],
@@ -113,37 +112,42 @@ def get_pool():
 
         try:
             _pool = pooling.MySQLConnectionPool(**pool_kwargs)
+            logger.info("Initialized MySQLConnectionPool successfully.")
             return _pool
-        except Exception:
+        except Exception as e:
+            logger.warning("Could not initialize connection pool: %s", e)
             _pool = None
             return None
     return None
 
 
 def create_connection():
-    """Create a database connection, preferring pooled connections for low latency."""
+    """Borrow connection from pool or create direct connection."""
     if DRIVER is None:
-        raise RuntimeError(
-            "No MySQL driver installed. Please install mysql-connector-python or pymysql."
-        )
+        raise RuntimeError("No MySQL driver installed. Please install mysql-connector-python or pymysql.")
 
-    # Use connection pool if available (substantially reduces latency on cloud hosts like Aiven)
     pool = get_pool()
     if pool is not None:
         try:
-            conn = pool.get_connection()
-            if hasattr(conn, "ping"):
-                try:
-                    conn.ping(reconnect=True, attempts=2, delay=1)
-                except Exception:
-                    pass
-            return conn
+            return pool.get_connection()
         except Exception:
-            pass  # Fall back to direct connection if pool is busy or failed
+            pass  # Fall back to direct connection if pool temporarily busy
 
     cfg = get_db_config()
 
-    if DRIVER == "pymysql":
+    if DRIVER == "mysql.connector":
+        kwargs = {
+            "host": cfg["host"],
+            "port": cfg["port"],
+            "user": cfg["user"],
+            "password": cfg["password"],
+            "database": cfg["database"],
+            "connection_timeout": 10
+        }
+        kwargs["ssl_disabled"] = False if cfg["ssl_required"] else True
+        return mysql.connector.connect(**kwargs)
+
+    else:  # pymysql fallback
         kwargs = {
             "host": cfg["host"],
             "port": cfg["port"],
@@ -158,29 +162,9 @@ def create_connection():
             kwargs["ssl"] = {"ssl_mode": "REQUIRED"}
         return pymysql.connect(**kwargs)
 
-    else:  # mysql.connector direct
-        kwargs = {
-            "host": cfg["host"],
-            "port": cfg["port"],
-            "user": cfg["user"],
-            "password": cfg["password"],
-            "database": cfg["database"],
-            "connection_timeout": 10
-        }
-        if cfg["ssl_required"]:
-            kwargs["ssl_disabled"] = False
-        else:
-            kwargs["ssl_disabled"] = True
-
-        return mysql.connector.connect(**kwargs)
-
 
 def get_db():
-    """
-    Get or create a database connection.
-    Stored on flask.g if inside an app context so all queries in one
-    request share a single connection.
-    """
+    """Get or create request-scoped connection."""
     if has_app_context():
         if "db" not in g:
             g.db = create_connection()
@@ -189,7 +173,7 @@ def get_db():
 
 
 def close_db(e=None):
-    """Close the request-scoped database connection if open."""
+    """Close request-scoped connection (returns it to pool)."""
     if has_app_context():
         db = g.pop("db", None)
         if db is not None:
@@ -200,21 +184,18 @@ def close_db(e=None):
 
 
 def get_db_connection():
-    """Compatibility alias for get_db()."""
     return get_db()
 
 
 def get_dict_cursor(conn):
-    """Return a cursor configured to return dictionaries across both drivers."""
     if DRIVER == "pymysql":
         return conn.cursor(pymysql.cursors.DictCursor)
     return conn.cursor(dictionary=True)
 
 
-def query_db(query, args=(), one=False):
+def query_db(query, args=(), one=False, retry=True):
     """
-    Execute a SELECT query and return rows as dictionaries.
-    If one=True, returns the first row or None.
+    Execute SELECT query with self-healing connection retry.
     """
     conn = get_db()
     cursor = get_dict_cursor(conn)
@@ -222,16 +203,31 @@ def query_db(query, args=(), one=False):
         cursor.execute(query, args)
         rows = cursor.fetchall()
         return (rows[0] if rows else None) if one else rows
+    except Exception as e:
+        # If remote connection was dropped, auto-reconnect and retry once
+        if retry and has_app_context():
+            g.pop("db", None)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return query_db(query, args, one=one, retry=False)
+        raise
     finally:
-        cursor.close()
+        try:
+            cursor.close()
+        except Exception:
+            pass
         if not has_app_context():
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
-def execute_db(query, args=(), commit=True):
+def execute_db(query, args=(), commit=True, retry=True):
     """
-    Execute an INSERT, UPDATE, or DELETE query.
-    Returns (rowcount, lastrowid).
+    Execute INSERT, UPDATE, DELETE with self-healing retry.
     """
     conn = get_db()
     cursor = conn.cursor()
@@ -242,21 +238,34 @@ def execute_db(query, args=(), commit=True):
         rowcount = cursor.rowcount
         lastrowid = getattr(cursor, "lastrowid", None)
         return rowcount, lastrowid
-    except Exception:
+    except Exception as e:
         if commit:
-            conn.rollback()
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        if retry and has_app_context():
+            g.pop("db", None)
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return execute_db(query, args, commit=commit, retry=False)
         raise
     finally:
-        cursor.close()
+        try:
+            cursor.close()
+        except Exception:
+            pass
         if not has_app_context():
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def init_db(conn=None):
-    """
-    Initialize database schema and default seed data.
-    Idempotent and safe to run on startup.
-    """
+    """Initialize database tables and subjects if they do not exist."""
     should_close = False
     if conn is None:
         conn = create_connection()
@@ -264,7 +273,6 @@ def init_db(conn=None):
 
     cursor = conn.cursor()
     try:
-        # Create students table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS students (
                 student_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -274,7 +282,6 @@ def init_db(conn=None):
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """)
 
-        # Create subjects table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS subjects (
                 subject_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -284,7 +291,6 @@ def init_db(conn=None):
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """)
 
-        # Create marks table
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS marks (
                 mark_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -303,7 +309,6 @@ def init_db(conn=None):
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
         """)
 
-        # Insert default subjects if they do not exist
         default_subjects = [
             ("Java", 100, 40),
             ("Python", 100, 40),
@@ -327,7 +332,7 @@ def init_db(conn=None):
 
 
 def seed_sample_data(conn=None):
-    """Populate sample students and marks for demonstration."""
+    """Seed sample data for testing."""
     should_close = False
     if conn is None:
         conn = create_connection()
@@ -335,7 +340,6 @@ def seed_sample_data(conn=None):
 
     cursor = get_dict_cursor(conn)
     try:
-        # Check if students already exist
         cursor.execute("SELECT COUNT(*) AS total FROM students")
         row = cursor.fetchone()
         if row and (row["total"] if isinstance(row, dict) else row[0]) > 0:
@@ -348,14 +352,9 @@ def seed_sample_data(conn=None):
             ("22CS004", "Meera Nair", "CSE-B"),
             ("22CS005", "Rohan Verma", "CSE-A")
         ]
-
         for roll_no, name, sec in sample_students:
-            cursor.execute(
-                "INSERT INTO students (roll_no, name, section) VALUES (%s, %s, %s)",
-                (roll_no, name, sec)
-            )
+            cursor.execute("INSERT INTO students (roll_no, name, section) VALUES (%s, %s, %s)", (roll_no, name, sec))
 
-        # Retrieve student IDs and subject IDs
         cursor.execute("SELECT student_id, roll_no FROM students")
         students = cursor.fetchall()
         cursor.execute("SELECT subject_id, subject_name FROM subjects")
@@ -365,35 +364,25 @@ def seed_sample_data(conn=None):
         subj_map = {s["subject_name"]: s["subject_id"] for s in subjects}
 
         sample_marks = [
-            # Aarav Sharma - Internal 1 (High performer)
             ("22CS001", "Java", "Internal 1", 46.0, 50),
             ("22CS001", "Python", "Internal 1", 48.0, 50),
             ("22CS001", "DBMS", "Internal 1", 44.0, 50),
             ("22CS001", "Mathematics", "Internal 1", 47.0, 50),
-
-            # Diya Patel - Internal 1 (Good performer)
             ("22CS002", "Java", "Internal 1", 40.0, 50),
             ("22CS002", "Python", "Internal 1", 42.0, 50),
             ("22CS002", "DBMS", "Internal 1", 38.0, 50),
             ("22CS002", "Mathematics", "Internal 1", 35.0, 50),
-
-            # Karthik Raja - Internal 1 (Needs assistance in Mathematics)
             ("22CS003", "Java", "Internal 1", 30.0, 50),
             ("22CS003", "Python", "Internal 1", 28.0, 50),
             ("22CS003", "DBMS", "Internal 1", 25.0, 50),
-            ("22CS003", "Mathematics", "Internal 1", 16.0, 50),  # Failed (<20)
-
-            # Meera Nair - Internal 1 (Needs assistance in DBMS)
+            ("22CS003", "Mathematics", "Internal 1", 16.0, 50),
             ("22CS004", "Java", "Internal 1", 35.0, 50),
             ("22CS004", "Python", "Internal 1", 32.0, 50),
-            ("22CS004", "DBMS", "Internal 1", 18.0, 50),  # Failed (<20)
+            ("22CS004", "DBMS", "Internal 1", 18.0, 50),
             ("22CS004", "Mathematics", "Internal 1", 34.0, 50),
-
-            # Rohan Verma - Incomplete (only Java and Python recorded)
             ("22CS005", "Java", "Internal 1", 39.0, 50),
             ("22CS005", "Python", "Internal 1", 41.0, 50),
         ]
-
         for roll_no, sub_name, exam, marks, max_m in sample_marks:
             s_id = stud_map.get(roll_no)
             sub_id = subj_map.get(sub_name)

@@ -1,7 +1,7 @@
 """
 EduTrack - Student Performance Analysis System
-Flask Web Application with MySQL Backend.
-Designed for local development and direct deployment to Render.
+High-Performance Flask Web Application with MySQL Backend.
+Optimized for zero-lag cloud database navigation (Aiven / Render).
 """
 
 import os
@@ -37,78 +37,96 @@ from db import (
     DRIVER
 )
 
-# Load environment variables
 load_dotenv()
 
 app = Flask(__name__)
 
-# Fallback secret key to ensure app never crashes if FLASK_SECRET_KEY is missing on Render
+# Cache static assets (CSS, JS) in client browser for 24 hours to avoid redundant downloads
+app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 86400
+
 app.secret_key = os.getenv(
     "FLASK_SECRET_KEY",
     "edutrack-secret-key-production-safe-3f98a21b4e"
 )
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("edutrack")
 
 # Register database connection teardown
 app.teardown_appcontext(close_db)
 
+# Run initialization ONCE on startup - never inside request handlers
+try:
+    init_db()
+    logger.info("Database tables verified successfully at startup.")
+except Exception as e:
+    logger.warning("Startup database check: %s", e)
 
-# Safe automatic database initialization on first startup
-_db_initialized = False
 
-@app.before_request
-def auto_init_database():
-    """Ensure database tables exist before handling requests."""
-    global _db_initialized
-    if not _db_initialized:
-        try:
-            init_db()
-            _db_initialized = True
-            logger.info("Database initialized successfully.")
-        except Exception as e:
-            logger.warning("Could not auto-initialize database on startup: %s", e)
+# ============================================================================
+# IN-MEMORY CACHE FOR HIGH-SPEED CLOUD NAVIGATION
+# ============================================================================
+_subjects_cache = None
+_students_cache = None
+_chart_cache = {}
+
+
+def invalidate_cache(clear_students=True, clear_charts=True):
+    """Clear memory caches when records are mutated."""
+    global _students_cache, _chart_cache
+    if clear_students:
+        _students_cache = None
+    if clear_charts:
+        _chart_cache.clear()
 
 
 def get_max_marks(assessment):
-    """Return the maximum allowable marks for a given assessment type."""
+    """Return the maximum allowable marks for an assessment."""
     if assessment in ("Internal 1", "Internal 2"):
         return 50
     return 100
 
 
 def get_pass_marks(assessment, max_marks=None):
-    """Return the passing marks based on assessment or max_marks."""
+    """Return the passing marks threshold."""
     if assessment in ("Internal 1", "Internal 2") or max_marks == 50:
         return 20
     return 40
 
 
-def load_students():
-    """Fetch all students ordered by ID."""
-    return query_db("""
+def load_students(force_refresh=False):
+    """Fetch students with in-memory caching."""
+    global _students_cache
+    if _students_cache is not None and not force_refresh:
+        return _students_cache
+
+    _students_cache = query_db("""
         SELECT student_id AS id, roll_no, name, section
         FROM students
         ORDER BY student_id ASC
     """)
+    return _students_cache
 
 
 def load_subjects():
-    """Fetch all subjects mapped by subject name."""
+    """Fetch subjects with permanent in-memory caching."""
+    global _subjects_cache
+    if _subjects_cache is not None:
+        return _subjects_cache
+
     rows = query_db("""
         SELECT subject_name, max_marks, pass_marks
         FROM subjects
         ORDER BY subject_id ASC
     """)
-    return {
+    _subjects_cache = {
         row["subject_name"]: {
             "max_marks": row["max_marks"],
             "pass_marks": row["pass_marks"]
         }
         for row in rows
     }
+    return _subjects_cache
 
 
 # ============================================================================
@@ -117,9 +135,9 @@ def load_subjects():
 
 @app.route("/")
 def dashboard():
-    """Main dashboard displaying high-level performance metrics."""
-    student_count_row = query_db("SELECT COUNT(*) AS total FROM students", one=True)
-    total_students = student_count_row["total"] if student_count_row else 0
+    """Dashboard displaying summary metrics."""
+    students = load_students()
+    total_students = len(students)
 
     stats = query_db("""
         SELECT
@@ -178,7 +196,7 @@ def dashboard():
 
 @app.route("/students")
 def students_page():
-    """List students with search filter support."""
+    """List students with search support."""
     search = request.args.get("search", "").strip()
 
     if search:
@@ -191,15 +209,10 @@ def students_page():
                OR section LIKE %s
             ORDER BY student_id ASC
         """, (search_pattern, search_pattern, search_pattern))
+        total_students = len(load_students())
     else:
-        students = query_db("""
-            SELECT student_id AS id, roll_no, name, section
-            FROM students
-            ORDER BY student_id ASC
-        """)
-
-    student_count_row = query_db("SELECT COUNT(*) AS total FROM students", one=True)
-    total_students = student_count_row["total"] if student_count_row else 0
+        students = load_students()
+        total_students = len(students)
 
     return render_template(
         "students.html",
@@ -221,7 +234,6 @@ def add_student():
         flash("Please fill in all fields (Roll Number, Name, Section).", "error")
         return redirect(url_for("students_page"))
 
-    # Check for existing roll number
     existing = query_db(
         "SELECT student_id FROM students WHERE roll_no = %s",
         (roll_no,),
@@ -236,10 +248,11 @@ def add_student():
             INSERT INTO students (roll_no, name, section)
             VALUES (%s, %s, %s)
         """, (roll_no, name, section))
+        invalidate_cache(clear_students=True, clear_charts=True)
         flash(f"Student '{name}' added successfully!", "success")
     except Exception as e:
         logger.exception("Error adding student: %s", e)
-        flash("Could not save the student due to a database error.", "error")
+        flash("Could not save student due to a database error.", "error")
 
     return redirect(url_for("students_page"))
 
@@ -266,7 +279,6 @@ def edit_student(student_id):
             flash("Please fill in all fields.", "error")
             return render_template("edit_student.html", active_page="students", student=student)
 
-        # Check for roll number collision with another student
         existing = query_db(
             "SELECT student_id FROM students WHERE roll_no = %s AND student_id != %s",
             (roll_no, student_id),
@@ -282,23 +294,22 @@ def edit_student(student_id):
                 SET roll_no = %s, name = %s, section = %s
                 WHERE student_id = %s
             """, (roll_no, name, section, student_id))
+            invalidate_cache(clear_students=True, clear_charts=True)
             flash("Student details updated successfully!", "success")
             return redirect(url_for("students_page"))
         except Exception as e:
             logger.exception("Error updating student: %s", e)
-            flash("Could not update student record due to a database error.", "error")
+            flash("Could not update student due to a database error.", "error")
 
     return render_template("edit_student.html", active_page="students", student=student)
 
 
 @app.route("/students/delete/<int:student_id>", methods=["POST"])
 def delete_student(student_id):
-    """Delete a student and cascade delete associated marks."""
+    """Delete a student and associated marks."""
     try:
-        rowcount, _ = execute_db(
-            "DELETE FROM students WHERE student_id = %s",
-            (student_id,)
-        )
+        rowcount, _ = execute_db("DELETE FROM students WHERE student_id = %s", (student_id,))
+        invalidate_cache(clear_students=True, clear_charts=True)
         if rowcount > 0:
             flash("Student deleted successfully!", "success")
         else:
@@ -388,17 +399,11 @@ def add_mark():
         flash(f"Marks must be between 0 and {maximum} for {assessment}.", "error")
         return redirect(url_for("marks_page"))
 
-    # Validate student
-    student = query_db(
-        "SELECT student_id, name FROM students WHERE student_id = %s",
-        (student_id,),
-        one=True
-    )
-    if not student:
-        flash("Please select a valid student from the list.", "error")
+    subjects = load_subjects()
+    if subject_name not in subjects:
+        flash("Please select a valid subject.", "error")
         return redirect(url_for("marks_page"))
 
-    # Validate subject
     subject_row = query_db(
         "SELECT subject_id FROM subjects WHERE subject_name = %s",
         (subject_name,),
@@ -407,10 +412,8 @@ def add_mark():
     if not subject_row:
         flash("Please select a valid subject.", "error")
         return redirect(url_for("marks_page"))
-
     subject_id = subject_row["subject_id"]
 
-    # Check for duplicate mark entry
     existing_mark = query_db("""
         SELECT mark_id FROM marks
         WHERE student_id = %s AND subject_id = %s AND assessment = %s
@@ -418,7 +421,7 @@ def add_mark():
 
     if existing_mark:
         flash(
-            f"Marks for {student['name']} in {subject_name} ({assessment}) already exist. "
+            f"Marks for this student in {subject_name} ({assessment}) already exist. "
             f"Please edit the existing record below.",
             "error"
         )
@@ -429,6 +432,7 @@ def add_mark():
             INSERT INTO marks (student_id, subject_id, assessment, marks_obtained, max_marks)
             VALUES (%s, %s, %s, %s, %s)
         """, (student_id, subject_id, assessment, marks_obtained, maximum))
+        invalidate_cache(clear_students=False, clear_charts=True)
         flash("Marks saved successfully!", "success")
     except Exception as e:
         logger.exception("Error saving marks: %s", e)
@@ -476,16 +480,13 @@ def edit_mark(mark_id):
             flash(f"Marks must be between 0 and {maximum}.", "error")
             return redirect(url_for("edit_mark", mark_id=mark_id))
 
-        student = query_db("SELECT student_id FROM students WHERE student_id = %s", (student_id,), one=True)
         subject_row = query_db("SELECT subject_id FROM subjects WHERE subject_name = %s", (subject_name,), one=True)
-
-        if not student or not subject_row:
-            flash("Invalid student or subject specified.", "error")
+        if not subject_row:
+            flash("Invalid subject specified.", "error")
             return redirect(url_for("edit_mark", mark_id=mark_id))
 
         subject_id = subject_row["subject_id"]
 
-        # Prevent duplicate clash with another record
         existing = query_db("""
             SELECT mark_id FROM marks
             WHERE student_id = %s AND subject_id = %s AND assessment = %s AND mark_id != %s
@@ -505,6 +506,7 @@ def edit_mark(mark_id):
                     max_marks = %s
                 WHERE mark_id = %s
             """, (student_id, subject_id, assessment, marks_obtained, maximum, mark_id))
+            invalidate_cache(clear_students=False, clear_charts=True)
             flash("Marks record updated successfully!", "success")
             return redirect(url_for("marks_page"))
         except Exception as e:
@@ -525,13 +527,14 @@ def delete_mark(mark_id):
     """Delete a marks entry."""
     try:
         rowcount, _ = execute_db("DELETE FROM marks WHERE mark_id = %s", (mark_id,))
+        invalidate_cache(clear_students=False, clear_charts=True)
         if rowcount > 0:
             flash("Marks record deleted successfully!", "success")
         else:
             flash("Marks record not found.", "error")
     except Exception as e:
         logger.exception("Error deleting mark: %s", e)
-        flash("Could not delete the marks record.", "error")
+        flash("Could not delete marks record.", "error")
 
     return redirect(url_for("marks_page"))
 
@@ -542,7 +545,7 @@ def delete_mark(mark_id):
 
 @app.route("/results")
 def results():
-    """Detailed subject-wise results for a selected student and assessment."""
+    """Detailed subject-wise results for a student and assessment."""
     selected_id = request.args.get("student_id", type=int)
     assessment = request.args.get("assessment", "Internal 1")
     assessments = ["Internal 1", "Internal 2", "Semester Exam"]
@@ -640,7 +643,9 @@ def results():
 
 @app.route("/analytics")
 def analytics():
-    """Visual and aggregate analytics across students for a given assessment."""
+    """Aggregate analytics with in-memory chart caching."""
+    global _chart_cache
+
     assessment = request.args.get("assessment", "Internal 1")
     assessments = ["Internal 1", "Internal 2", "Semester Exam"]
     expected_subjects = ["Java", "Python", "DBMS", "Mathematics"]
@@ -731,15 +736,11 @@ def analytics():
         )
         student_results.append(student)
 
-    # Toppers: students with all expected subjects complete, ranked by percentage
     complete_students = [s for s in student_results if s["complete"]]
     complete_students.sort(key=lambda s: s["percentage"], reverse=True)
     toppers = complete_students[:3]
 
-    # Students with one or more failed subjects
     assistance_students = [s for s in student_results if s["needs_assistance"]]
-
-    # Students missing one or more subjects
     incomplete_students = [s for s in student_results if not s["complete"]]
 
     subject_averages = []
@@ -755,22 +756,21 @@ def analytics():
                 "student_count": data["count"]
             })
 
-    # Render Chart to base64
-    chart_image = None
-    if subject_averages:
+    # Serve cached chart if available, or generate and cache
+    chart_image = _chart_cache.get(assessment)
+    if not chart_image and subject_averages:
         labels = [item["subject"] for item in subject_averages]
         values = [item["percentage"] for item in subject_averages]
 
-        fig, ax = plt.subplots(figsize=(8, 4), facecolor="#ffffff")
+        fig, ax = plt.subplots(figsize=(7, 3.5), facecolor="#ffffff")
         bars = ax.bar(labels, values, color="#2563eb", width=0.55)
-        ax.set_title(f"Subject Average Percentage — {assessment}", fontsize=13, fontweight="bold", pad=12)
-        ax.set_ylabel("Average Score (%)", fontsize=11)
+        ax.set_title(f"Subject Average Percentage — {assessment}", fontsize=12, fontweight="bold", pad=10)
+        ax.set_ylabel("Average Score (%)", fontsize=10)
         ax.set_ylim(0, 100)
         ax.grid(axis="y", linestyle="--", alpha=0.3)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
-        # Annotate percentages on bars
         for bar in bars:
             height = bar.get_height()
             ax.annotate(
@@ -778,16 +778,17 @@ def analytics():
                 xy=(bar.get_x() + bar.get_width() / 2, height),
                 xytext=(0, 3),
                 textcoords="offset points",
-                ha="center", va="bottom", fontsize=10, fontweight="bold"
+                ha="center", va="bottom", fontsize=9, fontweight="bold"
             )
 
         fig.tight_layout()
 
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=120)
+        fig.savefig(buf, format="png", dpi=90)
         plt.close(fig)
 
         chart_image = base64.b64encode(buf.getvalue()).decode("utf-8")
+        _chart_cache[assessment] = chart_image
 
     return render_template(
         "analytics.html",
@@ -811,18 +812,15 @@ def analytics():
 @app.route("/db-test")
 @app.route("/health")
 def db_health_check():
-    """Verify database connection and table status."""
+    """Verify database connection status."""
     try:
-        s_count = query_db("SELECT COUNT(*) AS c FROM students", one=True)
+        students = load_students(force_refresh=True)
         m_count = query_db("SELECT COUNT(*) AS c FROM marks", one=True)
-        sub_count = query_db("SELECT COUNT(*) AS c FROM subjects", one=True)
-
         return jsonify({
             "status": "healthy",
             "database": "connected",
             "driver": DRIVER,
-            "students_count": s_count["c"] if s_count else 0,
-            "subjects_count": sub_count["c"] if sub_count else 0,
+            "students_count": len(students),
             "marks_count": m_count["c"] if m_count else 0
         }), 200
     except Exception as e:
@@ -836,21 +834,20 @@ def db_health_check():
 
 @app.route("/init-db")
 def manual_init_db():
-    """Manually trigger schema and subject table creation."""
+    """Manually trigger table creation."""
     try:
         init_db()
-        return jsonify({
-            "success": True,
-            "message": "Database tables and subjects initialized successfully!"
-        }), 200
+        invalidate_cache()
+        return jsonify({"success": True, "message": "Database initialized successfully!"}), 200
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/seed-demo-data")
 def manual_seed_demo():
-    """Seed 5 sample students and sample marks for immediate testing."""
+    """Seed sample students and marks."""
     success, msg = seed_sample_data()
+    invalidate_cache()
     flash(msg, "success" if success else "error")
     return redirect(url_for("dashboard"))
 
