@@ -1,4 +1,3 @@
-
 {% extends "base.html" %}
 
 {% block content %}
@@ -19,73 +18,70 @@
     <div class="panel">
         <h2>Add Student Marks</h2>
 
-       
-<form action="{{ url_for('add_mark') }}" method="POST" class="vertical-form">
+        <form action="{{ url_for('add_mark') }}" method="POST" class="vertical-form">
 
-    <label for="student_id">Select Student</label>
-    <select id="student_id" name="student_id" required>
-        <option value="">Choose a student</option>
-        {% for student in all_students %}
-        <option value="{{ student.id }}">
-            {{ student.roll_no }} - {{ student.name }}
-        </option>
-        {% endfor %}
-    </select>
+            <label for="student_id">Select Student</label>
+            <select id="student_id" name="student_id" required>
+                <option value="">Choose a student</option>
+                {% for student in all_students %}
+                <option value="{{ student.id }}">
+                    {{ student.roll_no }} - {{ student.name }}
+                </option>
+                {% endfor %}
+            </select>
 
-    <label for="subject">Subject</label>
-    <select id="subject" name="subject" required>
-        <option value="">Choose a subject</option>
-        <option value="Java">Java</option>
-        <option value="Python">Python</option>
-        <option value="DBMS">DBMS</option>
-        <option value="Mathematics">Mathematics</option>
-    </select>
+            <label for="subject">Subject</label>
+            <select id="subject" name="subject" required>
+                <option value="">Choose a subject</option>
+                {% for subject_name in subjects %}
+                <option value="{{ subject_name }}">{{ subject_name }}</option>
+                {% endfor %}
+            </select>
 
-    <label for="assessment">Select Assessment</label>
-    <select id="assessment" name="assessment" required>
-        <option value="">Choose assessment</option>
-        <option value="Internal 1">Internal 1 (50 marks)</option>
-        <option value="Internal 2">Internal 2 (50 marks)</option>
-        <option value="Semester Exam">Semester Exam (100 marks)</option>
-    </select>
+            <label for="assessment">Select Assessment</label>
+            <select id="assessment" name="assessment" required>
+                <option value="">Choose assessment</option>
+                <option value="Internal 1">Internal 1 (50 marks)</option>
+                <option value="Internal 2">Internal 2 (50 marks)</option>
+                <option value="Semester Exam">Semester Exam (100 marks)</option>
+            </select>
 
-    <label for="marks_obtained">Marks Obtained</label>
-    <input
-        id="marks_obtained"
-        type="number"
-        name="marks_obtained"
-        min="0"
-        max="100"
-        step="any"
-        required
-    >
+            <label for="marks_obtained">Marks Obtained</label>
+            <input
+                id="marks_obtained"
+                type="number"
+                name="marks_obtained"
+                min="0"
+                max="100"
+                step="any"
+                required
+            >
 
-    <small id="marks-help">Select an assessment first.</small>
+            <small id="marks-help">Select an assessment first.</small>
 
-    <button type="submit">+ Save Marks</button>
-</form>
+            <button type="submit">+ Save Marks</button>
+        </form>
 
-<script>
-    const assessmentSelect = document.getElementById("assessment");
-    const marksInput = document.getElementById("marks_obtained");
-    const marksHelp = document.getElementById("marks-help");
+        <script>
+            const assessmentSelect = document.getElementById("assessment");
+            const marksInput = document.getElementById("marks_obtained");
+            const marksHelp = document.getElementById("marks-help");
 
-    assessmentSelect.addEventListener("change", function () {
-        if (this.value === "Internal 1" || this.value === "Internal 2") {
-            marksInput.max = 50;
-            marksHelp.textContent = "Enter marks between 0 and 50.";
-        } else if (this.value === "Semester Exam") {
-            marksInput.max = 100;
-            marksHelp.textContent = "Enter marks between 0 and 100.";
-        } else {
-            marksInput.max = 100;
-            marksHelp.textContent = "Select an assessment first.";
-        }
+            assessmentSelect.addEventListener("change", function () {
+                if (this.value === "Internal 1" || this.value === "Internal 2") {
+                    marksInput.max = 50;
+                    marksHelp.textContent = "Enter marks between 0 and 50.";
+                } else if (this.value === "Semester Exam") {
+                    marksInput.max = 100;
+                    marksHelp.textContent = "Enter marks between 0 and 100.";
+                } else {
+                    marksInput.max = 100;
+                    marksHelp.textContent = "Select an assessment first.";
+                }
 
-        marksInput.value = "";
-    });
-</script>
-
+                marksInput.value = "";
+            });
+        </script>
     </div>
 
     <!-- Marks Records and Search -->

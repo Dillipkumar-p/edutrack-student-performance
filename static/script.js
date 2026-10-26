@@ -1,35 +1,42 @@
+// EduTrack Client Scripts
 
-const searchInput = document.getElementById("searchInput");
-const studentTable = document.getElementById("studentTable");
-const noResults = document.getElementById("noResults");
+document.addEventListener("DOMContentLoaded", function () {
+    const searchInput = document.getElementById("searchInput");
+    const studentTable = document.getElementById("studentTable");
+    const noResults = document.getElementById("noResults");
 
-searchInput.addEventListener("input", function () {
-    const searchText = this.value.toLowerCase().trim();
-    const rows = studentTable.querySelectorAll("tr");
-    let visibleCount = 0;
+    if (searchInput && studentTable) {
+        searchInput.addEventListener("input", function () {
+            const searchText = this.value.toLowerCase().trim();
+            const rows = studentTable.querySelectorAll("tbody tr");
+            let visibleCount = 0;
 
-    rows.forEach(function (row) {
-        const rowText = row.textContent.toLowerCase();
-        const matches = rowText.includes(searchText);
+            rows.forEach(function (row) {
+                const rowText = row.textContent.toLowerCase();
+                const matches = rowText.includes(searchText);
+                row.hidden = !matches;
+                if (matches) {
+                    visibleCount++;
+                }
+            });
 
-        row.hidden = !matches;
-
-        if (matches) {
-            visibleCount++;
-        }
-    });
-
-    noResults.hidden = visibleCount !== 0;
-});
-
-const navLinks = document.querySelectorAll(".nav-link");
-
-navLinks.forEach(function (link) {
-    link.addEventListener("click", function () {
-        navLinks.forEach(function (item) {
-            item.classList.remove("active");
+            if (noResults) {
+                noResults.hidden = (visibleCount !== 0);
+            }
         });
+    }
 
-        this.classList.add("active");
+    // Auto-dismiss alert notices after 5 seconds
+    const notices = document.querySelectorAll(".notice");
+    notices.forEach(function (notice) {
+        setTimeout(function () {
+            notice.style.transition = "opacity 0.5s ease";
+            notice.style.opacity = "0";
+            setTimeout(function () {
+                if (notice.parentNode) {
+                    notice.parentNode.removeChild(notice);
+                }
+            }, 500);
+        }, 5000);
     });
 });

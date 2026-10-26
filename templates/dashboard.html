@@ -1,4 +1,3 @@
-
 {% extends "base.html" %}
 {% block title %}Dashboard | EduTrack{% endblock %}
 
@@ -11,10 +10,23 @@
     </div>
 </header>
 
+{% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+        <div class="notice {{ category }}">{{ message }}</div>
+    {% endfor %}
+{% endwith %}
+
+{% if total_students == 0 %}
+<div class="notice info" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+    <span>Welcome! Your database is currently empty. You can add students manually or load demo sample data with one click.</span>
+    <a href="{{ url_for('manual_seed_demo') }}" style="background: #2563eb; color: #ffffff; padding: 6px 14px; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 13px;">+ Load Demo Data</a>
+</div>
+{% endif %}
+
 <section>
     <div class="section-heading">
         <h2>Overview</h2>
-        <p>Current Flask data</p>
+        <p>Current academic data</p>
     </div>
 
     <div class="stats-grid">
@@ -54,8 +66,16 @@
         Manage student records, review academic results, and explore
         performance analytics using the navigation menu.
     </p>
-    <a class="action-link" href="{{ url_for('students_page') }}">
-        Open Student Management →
-    </a>
+    <div style="display: flex; gap: 12px; margin-top: 15px;">
+        <a class="action-link" href="{{ url_for('students_page') }}">
+            Open Student Management →
+        </a>
+        <a class="action-link" href="{{ url_for('marks_page') }}" style="background: #f1f5f9; color: #334155;">
+            Manage Marks →
+        </a>
+        <a class="action-link" href="{{ url_for('analytics') }}" style="background: #f1f5f9; color: #334155;">
+            View Analytics →
+        </a>
+    </div>
 </section>
 {% endblock %}
